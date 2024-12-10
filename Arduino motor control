@@ -1,0 +1,135 @@
+// defines pins numbers
+
+const int dirPin  = 3;
+const int stepPin = 4;
+const int enPin   = 5;
+const int switchOne     = 8;
+const int switchTwo     = 9;
+const int proximityPin = 7;
+
+int p1buttonState = 0;         // current state of the button
+int lastp1buttonState = 0;     // previous state of the button
+
+bool bPress = false;
+
+int p2buttonState = 0;         // current state of the button
+int lastp2buttonState = 0;     // previous state of the button
+
+bool isForward = false;
+bool isBackward = false;
+
+
+void setup() {
+
+  Serial.begin(9600);
+  pinMode( switchOne, INPUT_PULLUP);
+  pinMode( switchTwo, INPUT_PULLUP);
+  pinMode( proximityPin, INPUT); // 센서 핀 설정
+
+  // Sets the two pins as Outputs
+
+  pinMode(stepPin,OUTPUT);
+  pinMode(dirPin,OUTPUT);
+
+  pinMode(enPin,OUTPUT);
+  digitalWrite(enPin,LOW);
+}
+
+void loop() {
+   isForward = false;
+   isBackward = false;
+
+   p1buttonState = digitalRead(switchOne);
+   p2buttonState = digitalRead(switchTwo);
+   
+  if (p1ButtonPress()) {
+
+    digitalWrite(dirPin,HIGH);
+    delay(5);
+
+  }
+
+    if(isForward){
+      for(int i = 0; i < 2000; i++) {
+        digitalWrite(stepPin,HIGH);
+        delayMicroseconds(100);
+        digitalWrite(stepPin,LOW);
+        delayMicroseconds(100);
+      }
+    }
+  if (p2ButtonPress()) {
+    Serial.println("Button 2 pressed Rotating one full turn");
+    digitalWrite(dirPin,HIGH);
+    rotateOneTurnWithProximity();
+    delay(5);
+  } 
+}
+
+bool p1ButtonPress()
+{
+   bool isPress = false;
+   // compare the p1buttonState to its previous state
+  if (p1buttonState != lastp1buttonState) {
+    // if the state has changed, increment the counter
+    if (p1buttonState == LOW) {
+      // if the current state is HIGH then the button went from off to on:
+      bPress = true;
+      isPress = true;
+      Serial.println("Plaer One score");
+    } else {
+      // if the current state is LOW then the button went from on to off:
+      Serial.println("off");
+      isForward = true;
+    }
+    // Delay a little bit to avoid bouncing
+    delay(50);
+  }
+
+  // save the current state as the last state, for next time through the loop
+  lastp1buttonState = p1buttonState;
+  return isPress;
+}
+
+bool p2ButtonPress(){
+   bool isPress = false;
+   // compare the p1buttonState to its previous state
+  if (p2buttonState != lastp2buttonState) {
+    // if the state has changed, increment the counter
+    if (p2buttonState == LOW) {
+      // if the current state is HIGH then the button went from off to on:
+      isPress = true;
+      Serial.println("Plaer Two score");
+    } 
+    // Delay a little bit to avoid bouncing
+    delay(50);
+  }
+
+  // save the current state as the last state, for next time through the loop
+  lastp2buttonState = p2buttonState;
+  return isPress;
+}
+
+void rotateOneTurnWithProximity() {
+  const int stepsPerRevolution = 8000; // 모터 한 바퀴 회전 스텝 수
+
+  // 근접 센서 상태 확인
+  if (digitalRead(proximityPin) == LOW) {
+    Serial.println("Proximity sensor already triggered - Motor will not start.");
+    return; // 센서가 트리거된 상태라면 회전하지 않음
+  }
+
+  for (int i = 0; i < stepsPerRevolution; i++) {
+    // 모터 회전
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(100); // Pulse duration
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(100); // Delay before next pulse
+
+    // 근접 센서 상태 확인
+    if (digitalRead(proximityPin) == LOW) {
+      Serial.println("Proximity sensor triggered - Stopping motor!");
+      return; // 센서 트리거 시 회전 중단
+    }
+  }
+  Serial.println("One full turn completed");
+}
