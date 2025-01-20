@@ -1,135 +1,327 @@
-// defines pins numbers
+/******************************************************
+ * 핀 설정
+ ******************************************************/
+const int dirPin  = 3; 
+const int stepPin = 4; 
+const int enPin   = 5; 
+const int proximityPinlift = 6; 
+const int proximityPinZero = 7; 
+const int switchOne     = 8; 
+const int switchTwo     = 9; 
+const int proximityPinMain = 10; 
+const int solenoidPinlift = 11; 
+const int solenoidPinout = 12; 
+const int solenoidPinMain = 13; 
 
-const int dirPin  = 3;
-const int stepPin = 4;
-const int enPin   = 5;
-const int switchOne     = 8;
-const int switchTwo     = 9;
-const int proximityPin = 7;
+/******************************************************
+ * 전역 변수
+ ******************************************************/
+// 버튼 상태
+int p1buttonState = 0;    
+int lastp1buttonState = 0;    
 
-int p1buttonState = 0;         // current state of the button
-int lastp1buttonState = 0;     // previous state of the button
+int p2buttonState = 0;    
+int lastp2buttonState = 0;    
 
 bool bPress = false;
 
-int p2buttonState = 0;         // current state of the button
-int lastp2buttonState = 0;     // previous state of the button
+// 현재 어떤 버튼 동작을 수행 중인지 추적
+bool isButton1Active = false; 
+bool isButton2Active = false;
 
-bool isForward = false;
-bool isBackward = false;
+// 모터 회전 진행 여부
+bool isMotorRunning = false;
 
+// === [추가/수정] 1초 지연용 플래그 및 시간 기록 변수 ===
+bool mainSensorPending = false;             // 메인 센서가 트리거되었지만, 아직 솔레노이드 OFF 상태
+unsigned long mainSensorTriggeredTime = 0;  // 메인 센서 트리거 순간
+bool liftSensorPending = false;             // 리프트 센서 트리거 대기
+unsigned long liftSensorTriggeredTime = 0;  // 리프트 센서 트리거 순간
 
+// 근접 센서 상태(메인, 리프트) - 직전값
+bool lastProximityState = HIGH;      
+bool lastProximityliftState = HIGH;  
+
+// 솔레노이드 작동 관리
+unsigned long solenoidStartTime      = 0; 
+unsigned long solenoidLiftStartTime  = 0;
+unsigned long solenoidOutStartTime   = 0;
+
+bool solenoidActive     = false; 
+bool solenoidLiftActive = false; 
+bool solenoidOutActive  = false;  
+
+/******************************************************
+ * 초기 설정
+ ******************************************************/
 void setup() {
+  // 솔레노이드 핀 출력
+  pinMode(solenoidPinMain, OUTPUT);
+  pinMode(solenoidPinlift, OUTPUT);
+  pinMode(solenoidPinout, OUTPUT);
 
+  // 버튼, 센서 핀 입력
+  pinMode(switchOne, INPUT_PULLUP);
+  pinMode(switchTwo, INPUT_PULLUP);
+  pinMode(proximityPinZero, INPUT); 
+  pinMode(proximityPinMain, INPUT);
+  pinMode(proximityPinlift, INPUT);
+
+  // 솔레노이드 OFF 초기화
+  digitalWrite(solenoidPinMain, LOW);
+  digitalWrite(solenoidPinlift, LOW);
+  digitalWrite(solenoidPinout, LOW);
+
+  // 스텝모터 제어 핀
+  pinMode(stepPin, OUTPUT);
+  pinMode(dirPin, OUTPUT);
+  pinMode(enPin, OUTPUT);
+  digitalWrite(enPin, LOW); // Enable 모터
+
+  // 시리얼 통신
   Serial.begin(9600);
-  pinMode( switchOne, INPUT_PULLUP);
-  pinMode( switchTwo, INPUT_PULLUP);
-  pinMode( proximityPin, INPUT); // 센서 핀 설정
-
-  // Sets the two pins as Outputs
-
-  pinMode(stepPin,OUTPUT);
-  pinMode(dirPin,OUTPUT);
-
-  pinMode(enPin,OUTPUT);
-  digitalWrite(enPin,LOW);
 }
 
-void loop() {
-   isForward = false;
-   isBackward = false;
+/******************************************************
+ * 메인 loop
+ ******************************************************/
+void loop() 
+{
+  // 1) 솔레노이드 동작 중이 아니고, 모터가 돌고 있지 않을 때만 버튼 입력
+  if (!anySolenoidActive() && !isMotorRunning) {
+    p1buttonState = digitalRead(switchOne);
+    p2buttonState = digitalRead(switchTwo);
 
-   p1buttonState = digitalRead(switchOne);
-   p2buttonState = digitalRead(switchTwo);
-   
-  if (p1ButtonPress()) {
+    // 버튼1(90도 회전) 누름 여부
+    if (p1ButtonPress()) {
+      isButton1Active = true;
+      isButton2Active = false;
 
-    digitalWrite(dirPin,HIGH);
-    delay(5);
+      digitalWrite(dirPin, HIGH); 
+      isMotorRunning = true; // 모터 회전 시작
+    }
 
+    // 버튼2(홈조절) 누름 여부
+    if (p2ButtonPress()) {
+      isButton1Active = false;
+      isButton2Active = true;
+
+      digitalWrite(dirPin, HIGH);
+      isMotorRunning = true;
+    }
   }
 
-    if(isForward){
-      for(int i = 0; i < 2000; i++) {
-        digitalWrite(stepPin,HIGH);
-        delayMicroseconds(100);
-        digitalWrite(stepPin,LOW);
-        delayMicroseconds(100);
-      }
-    }
-  if (p2ButtonPress()) {
-    Serial.println("Button 2 pressed Rotating one full turn");
-    digitalWrite(dirPin,HIGH);
-    rotateOneTurnWithProximity();
-    delay(5);
-  } 
+  // 2) 버튼1이 활성화된 경우 → 2000스텝 회전 중 센서 체크(메인/리프트)
+  if (isButton1Active && isMotorRunning) {
+    rotateStepsWithMainLiftSensor(2000);
+    isMotorRunning = false;
+    isButton1Active = false;
+  }
+
+  // 3) 버튼2가 활성화된 경우 → 한 바퀴 회전(또는 0점 센서) 체크, 메인/리프트 무시
+  if (isButton2Active && isMotorRunning) {
+    rotateOneTurnWithProximity(); 
+    isMotorRunning = false;
+    isButton2Active = false;
+  }
+
+  // 4) 솔레노이드 상태 업데이트 (1초 뒤 ON, 자동 OFF 등)
+  updateSolenoidState();
 }
 
+/******************************************************
+ * 스텝모터 1스텝씩 회전하며 메인/리프트 센서 체크
+ *  - 버튼1(2000스텝)용
+ ******************************************************/
+void rotateStepsWithMainLiftSensor(int totalSteps)
+{
+  for(int i = 0; i < totalSteps; i++) {
+    // 모터 한 스텝
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(500);
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(500);
+
+    // 버튼1 상황에서만 메인/리프트 센서 확인
+    checkMainLiftSensor();
+    
+    // 솔레노이드 타이머 체크
+    updateSolenoidState();
+  }
+}
+
+/******************************************************
+ * 메인/리프트 센서를 읽어서 
+ * "트리거 순간"만 기록 (1초 뒤 ON 위해)
+ ******************************************************/
+void checkMainLiftSensor()
+{
+  bool currentProximityState     = digitalRead(proximityPinMain);
+  bool currentProximityliftState = digitalRead(proximityPinlift);
+
+  // === [수정] 기존엔 즉시 ON → 이제는 '트리거 시간만' 기록 ===
+  if (currentProximityState == LOW && lastProximityState == HIGH) {
+    delay(50);
+    Serial.println("[Main sensor triggered] Will turn on MAIN solenoid after 1s");
+    mainSensorPending = true;                  // === [추가]
+    mainSensorTriggeredTime = millis();        // === [추가]
+  }
+
+  if (currentProximityliftState == LOW && lastProximityliftState == HIGH) {
+    delay(50);
+    Serial.println("[Lift sensor triggered] Will turn on LIFT solenoid after 1s");
+    liftSensorPending = true;                  // === [추가]
+    liftSensorTriggeredTime = millis();        // === [추가]
+  }
+
+  lastProximityState = currentProximityState;
+  lastProximityliftState = currentProximityliftState;
+}
+
+/******************************************************
+ * 버튼2 전용: 한 바퀴(8000스텝) 회전하되,
+ * 0점 센서에 닿으면 중간 정지 (메인/리프트 무시)
+ ******************************************************/
+void rotateOneTurnWithProximity() 
+{
+  const int stepsPerRevolution = 8000; 
+
+  if (digitalRead(proximityPinZero) == LOW) {
+    Serial.println("Zero sensor already triggered - No rotation.");
+    return;
+  }
+
+  for (int i = 0; i < stepsPerRevolution; i++) {
+    digitalWrite(stepPin, HIGH);
+    delayMicroseconds(500);
+    digitalWrite(stepPin, LOW);
+    delayMicroseconds(500);
+
+    // 0점 센서 체크
+    if (digitalRead(proximityPinZero) == LOW) {
+      Serial.println("Zero sensor triggered - Stopping motor!");
+      return;
+    }
+  }
+  Serial.println("One full turn completed");
+}
+
+/******************************************************
+ * 솔레노이드 ON/OFF 타이밍 처리 (1초 지연 로직 포함)
+ ******************************************************/
+void updateSolenoidState()
+{
+  /********************************************
+   * (1) 메인 센서 대기 -> 1초 지났으면 메인 솔레노이드 ON
+   ********************************************/
+  // === [추가/수정] ===
+  if (mainSensorPending && !solenoidActive) {
+    if (millis() - mainSensorTriggeredTime >= 2000) {
+      Serial.println(">>> 1 second passed: MAIN Solenoid ON");
+      digitalWrite(solenoidPinMain, HIGH);
+      solenoidStartTime = millis();
+      solenoidActive = true;
+
+      mainSensorPending = false; // 대기 해제
+    }
+  }
+
+  /********************************************
+   * (2) 리프트 센서 대기 -> 1초 지났으면 리프트 솔레노이드 ON
+   ********************************************/
+  // === [추가/수정] ===
+  if (liftSensorPending && !solenoidLiftActive) {
+    if (millis() - liftSensorTriggeredTime >= 2000) {
+      Serial.println(">>> 1 second passed: LIFT Solenoid ON");
+      digitalWrite(solenoidPinlift, HIGH);
+      solenoidLiftStartTime = millis();
+      solenoidLiftActive = true;
+
+      liftSensorPending = false; 
+    }
+  }
+
+  /********************************************
+   * (3) 기존 로직: 리프트 ON 후 3초 뒤 Out ON
+   ********************************************/
+  if (solenoidLiftActive && (millis() - solenoidLiftStartTime >= 2000) && !solenoidOutActive) {
+    Serial.println("Lift Solenoid ON -> 3sec -> Out Solenoid ON");
+    digitalWrite(solenoidPinout, HIGH);
+    solenoidOutStartTime = millis();
+    solenoidOutActive = true;
+  }
+
+  /********************************************
+   * (4) 메인 솔레노이드 3초 후 OFF
+   ********************************************/
+  if (solenoidActive && (millis() - solenoidStartTime >= 3000)) {
+    Serial.println("Main Solenoid OFF");
+    digitalWrite(solenoidPinMain, LOW);
+    solenoidActive = false;
+  }
+
+  /********************************************
+   * (5) 리프트 솔레노이드 6초 후 OFF
+   ********************************************/
+  if (solenoidLiftActive && (millis() - solenoidLiftStartTime >= 6000)) {
+    Serial.println("Lift Solenoid OFF");
+    digitalWrite(solenoidPinlift, LOW);
+    solenoidLiftActive = false;
+  }
+
+  /********************************************
+   * (6) 아웃 솔레노이드 3초 후 OFF
+   ********************************************/
+  if (solenoidOutActive && (millis() - solenoidOutStartTime >= 2500)) {
+    Serial.println("Out Solenoid OFF");
+    digitalWrite(solenoidPinout, LOW);
+    solenoidOutActive = false;
+  }
+}
+
+/******************************************************
+ * 현재 어떤 솔레노이드라도 동작 중인지 확인
+ ******************************************************/
+bool anySolenoidActive() {
+  return (solenoidActive || solenoidLiftActive || solenoidOutActive);
+}
+
+/******************************************************
+ * 버튼1(스위치1) 눌림 체크
+ ******************************************************/
 bool p1ButtonPress()
 {
-   bool isPress = false;
-   // compare the p1buttonState to its previous state
+  bool isPress = false;
+
   if (p1buttonState != lastp1buttonState) {
-    // if the state has changed, increment the counter
     if (p1buttonState == LOW) {
-      // if the current state is HIGH then the button went from off to on:
-      bPress = true;
       isPress = true;
-      Serial.println("Plaer One score");
+      Serial.println("Button1 Pressed");
     } else {
-      // if the current state is LOW then the button went from on to off:
-      Serial.println("off");
-      isForward = true;
+      Serial.println("Button1 Released -> Start motor (2000 steps)");
     }
-    // Delay a little bit to avoid bouncing
-    delay(50);
+    delay(50); // 바운싱 방지
   }
 
-  // save the current state as the last state, for next time through the loop
   lastp1buttonState = p1buttonState;
   return isPress;
 }
 
-bool p2ButtonPress(){
-   bool isPress = false;
-   // compare the p1buttonState to its previous state
+/******************************************************
+ * 버튼2(스위치2) 눌림 체크
+ ******************************************************/
+bool p2ButtonPress()
+{
+  bool isPress = false;
+
   if (p2buttonState != lastp2buttonState) {
-    // if the state has changed, increment the counter
     if (p2buttonState == LOW) {
-      // if the current state is HIGH then the button went from off to on:
       isPress = true;
-      Serial.println("Plaer Two score");
-    } 
-    // Delay a little bit to avoid bouncing
-    delay(50);
+      Serial.println("Button2 Pressed -> Rotate to zero sensor");
+    }
+    delay(50); // 바운싱 방지
   }
 
-  // save the current state as the last state, for next time through the loop
   lastp2buttonState = p2buttonState;
   return isPress;
-}
-
-void rotateOneTurnWithProximity() {
-  const int stepsPerRevolution = 8000; // 모터 한 바퀴 회전 스텝 수
-
-  // 근접 센서 상태 확인
-  if (digitalRead(proximityPin) == LOW) {
-    Serial.println("Proximity sensor already triggered - Motor will not start.");
-    return; // 센서가 트리거된 상태라면 회전하지 않음
-  }
-
-  for (int i = 0; i < stepsPerRevolution; i++) {
-    // 모터 회전
-    digitalWrite(stepPin, HIGH);
-    delayMicroseconds(100); // Pulse duration
-    digitalWrite(stepPin, LOW);
-    delayMicroseconds(100); // Delay before next pulse
-
-    // 근접 센서 상태 확인
-    if (digitalRead(proximityPin) == LOW) {
-      Serial.println("Proximity sensor triggered - Stopping motor!");
-      return; // 센서 트리거 시 회전 중단
-    }
-  }
-  Serial.println("One full turn completed");
 }
