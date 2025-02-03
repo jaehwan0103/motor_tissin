@@ -32,11 +32,11 @@ bool isButton2Active = false;
 // 모터 회전 진행 여부
 bool isMotorRunning = false;
 
-// === [추가/수정] 1초 지연용 플래그 및 시간 기록 변수 ===
-bool mainSensorPending = false;             // 메인 센서가 트리거되었지만, 아직 솔레노이드 OFF 상태
-unsigned long mainSensorTriggeredTime = 0;  // 메인 센서 트리거 순간
-bool liftSensorPending = false;             // 리프트 센서 트리거 대기
-unsigned long liftSensorTriggeredTime = 0;  // 리프트 센서 트리거 순간
+// 1초 지연용 플래그 및 시간 기록 변수 (메인, 리프트 센서)
+bool mainSensorPending = false;            
+unsigned long mainSensorTriggeredTime = 0; 
+bool liftSensorPending = false;            
+unsigned long liftSensorTriggeredTime = 0; 
 
 // 근접 센서 상태(메인, 리프트) - 직전값
 bool lastProximityState = HIGH;      
@@ -50,6 +50,10 @@ unsigned long solenoidOutStartTime   = 0;
 bool solenoidActive     = false; 
 bool solenoidLiftActive = false; 
 bool solenoidOutActive  = false;  
+
+// [추가된 부분 1] 메인 솔레노이드 OFF 후 자동 회전을 위한 변수
+bool startAutoRotationAfterMainOff = false;  // 메인 OFF 후 자동회전 트리거
+unsigned long mainSolenoidOffTime = 0;       // 메인 솔레노이드가 꺼진 시각
 
 /******************************************************
  * 초기 설정
@@ -87,7 +91,7 @@ void setup() {
  ******************************************************/
 void loop() 
 {
-  // 1) 솔레노이드 동작 중이 아니고, 모터가 돌고 있지 않을 때만 버튼 입력
+  // (1) 솔레노이드 동작 중이 아니고, 모터가 돌고 있지 않을 때만 버튼 입력
   if (!anySolenoidActive() && !isMotorRunning) {
     p1buttonState = digitalRead(switchOne);
     p2buttonState = digitalRead(switchTwo);
@@ -111,21 +115,39 @@ void loop()
     }
   }
 
-  // 2) 버튼1이 활성화된 경우 → 2000스텝 회전 중 센서 체크(메인/리프트)
+  // (2) 버튼1이 활성화된 경우 → 2000스텝 회전 중 센서 체크(메인/리프트)
   if (isButton1Active && isMotorRunning) {
     rotateStepsWithMainLiftSensor(2000);
     isMotorRunning = false;
     isButton1Active = false;
   }
 
-  // 3) 버튼2가 활성화된 경우 → 한 바퀴 회전(또는 0점 센서) 체크, 메인/리프트 무시
+  // (3) 버튼2가 활성화된 경우 → 한 바퀴 회전(또는 0점 센서) 체크, 메인/리프트 무시
   if (isButton2Active && isMotorRunning) {
     rotateOneTurnWithProximity(); 
     isMotorRunning = false;
     isButton2Active = false;
   }
 
-  // 4) 솔레노이드 상태 업데이트 (1초 뒤 ON, 자동 OFF 등)
+  // [추가된 부분 2] 메인 솔레노이드 OFF 후 1.5초 지나면 -> 자동으로 버튼1 동작 수행
+  if (startAutoRotationAfterMainOff) {
+    // 1.5초 = 1500ms 경과 확인
+    if ((millis() - mainSolenoidOffTime) >= 1500) {
+      // 현재 솔레노이드/모터가 모두 정지 상태라면 실행
+      // (버튼1 동작과 동일하게 isButton1Active = true; 모터 회전)
+      if (!anySolenoidActive() && !isMotorRunning) {
+        Serial.println("[Auto] Main Solenoid OFF -> 1.5s -> Start motor (2000 steps)");
+        isButton1Active = true;
+        isButton2Active = false;
+        isMotorRunning = true;
+        digitalWrite(dirPin, HIGH);
+      }
+      // 한 번만 실행하고 끝나므로, 플래그 해제
+      startAutoRotationAfterMainOff = false;
+    }
+  }
+
+  // (4) 솔레노이드 상태 업데이트 (1초 뒤 ON, 자동 OFF 등)
   updateSolenoidState();
 }
 
@@ -159,19 +181,18 @@ void checkMainLiftSensor()
   bool currentProximityState     = digitalRead(proximityPinMain);
   bool currentProximityliftState = digitalRead(proximityPinlift);
 
-  // === [수정] 기존엔 즉시 ON → 이제는 '트리거 시간만' 기록 ===
   if (currentProximityState == LOW && lastProximityState == HIGH) {
     delay(50);
     Serial.println("[Main sensor triggered] Will turn on MAIN solenoid after 1s");
-    mainSensorPending = true;                  // === [추가]
-    mainSensorTriggeredTime = millis();        // === [추가]
+    mainSensorPending = true;
+    mainSensorTriggeredTime = millis();
   }
 
   if (currentProximityliftState == LOW && lastProximityliftState == HIGH) {
     delay(50);
     Serial.println("[Lift sensor triggered] Will turn on LIFT solenoid after 1s");
-    liftSensorPending = true;                  // === [추가]
-    liftSensorTriggeredTime = millis();        // === [추가]
+    liftSensorPending = true;
+    liftSensorTriggeredTime = millis();
   }
 
   lastProximityState = currentProximityState;
@@ -211,10 +232,7 @@ void rotateOneTurnWithProximity()
  ******************************************************/
 void updateSolenoidState()
 {
-  /********************************************
-   * (1) 메인 센서 대기 -> 1초 지났으면 메인 솔레노이드 ON
-   ********************************************/
-  // === [추가/수정] ===
+  // (1) 메인 센서 대기 -> 1초 지났으면 메인 솔레노이드 ON
   if (mainSensorPending && !solenoidActive) {
     if (millis() - mainSensorTriggeredTime >= 2000) {
       Serial.println(">>> 1 second passed: MAIN Solenoid ON");
@@ -226,10 +244,7 @@ void updateSolenoidState()
     }
   }
 
-  /********************************************
-   * (2) 리프트 센서 대기 -> 1초 지났으면 리프트 솔레노이드 ON
-   ********************************************/
-  // === [추가/수정] ===
+  // (2) 리프트 센서 대기 -> 1초 지났으면 리프트 솔레노이드 ON
   if (liftSensorPending && !solenoidLiftActive) {
     if (millis() - liftSensorTriggeredTime >= 2000) {
       Serial.println(">>> 1 second passed: LIFT Solenoid ON");
@@ -241,38 +256,34 @@ void updateSolenoidState()
     }
   }
 
-  /********************************************
-   * (3) 기존 로직: 리프트 ON 후 3초 뒤 Out ON
-   ********************************************/
-  if (solenoidLiftActive && (millis() - solenoidLiftStartTime >= 2000) && !solenoidOutActive) {
+  // (3) 리프트 ON 후 3초 뒤 Out ON
+  if (solenoidLiftActive && (millis() - solenoidLiftStartTime >= 1500) && !solenoidOutActive) {
     Serial.println("Lift Solenoid ON -> 3sec -> Out Solenoid ON");
     digitalWrite(solenoidPinout, HIGH);
     solenoidOutStartTime = millis();
     solenoidOutActive = true;
   }
 
-  /********************************************
-   * (4) 메인 솔레노이드 3초 후 OFF
-   ********************************************/
-  if (solenoidActive && (millis() - solenoidStartTime >= 3000)) {
+  // (4) 메인 솔레노이드 3초 후 OFF
+  if (solenoidActive && (millis() - solenoidStartTime >= 5000)) {
     Serial.println("Main Solenoid OFF");
     digitalWrite(solenoidPinMain, LOW);
     solenoidActive = false;
+
+    // [추가된 부분 3] "메인 솔레노이드가 방금 꺼짐" → 시각 저장, 자동회전 플래그 ON
+    mainSolenoidOffTime = millis();
+    startAutoRotationAfterMainOff = true;
   }
 
-  /********************************************
-   * (5) 리프트 솔레노이드 6초 후 OFF
-   ********************************************/
-  if (solenoidLiftActive && (millis() - solenoidLiftStartTime >= 6000)) {
+  // (5) 리프트 솔레노이드 6초 후 OFF
+  if (solenoidLiftActive && (millis() - solenoidLiftStartTime >= 3000)) {
     Serial.println("Lift Solenoid OFF");
     digitalWrite(solenoidPinlift, LOW);
     solenoidLiftActive = false;
   }
 
-  /********************************************
-   * (6) 아웃 솔레노이드 3초 후 OFF
-   ********************************************/
-  if (solenoidOutActive && (millis() - solenoidOutStartTime >= 2500)) {
+  // (6) 아웃 솔레노이드 3초 후 OFF
+  if (solenoidOutActive && (millis() - solenoidOutStartTime >= 1000)) {
     Serial.println("Out Solenoid OFF");
     digitalWrite(solenoidPinout, LOW);
     solenoidOutActive = false;
